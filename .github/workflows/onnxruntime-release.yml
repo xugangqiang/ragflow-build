@@ -117,6 +117,22 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Install Python build deps
+        shell: bash
+        run: |
+          set -euo pipefail
+          # ORT 1.29.0 binds parse_config into `util` only when `flatbuffers` is
+          # importable: tools/python/util/__init__.py wraps the re-export in
+          # `try: import flatbuffers`. build.sh passes --include_ops_by_config,
+          # which makes build.py lazily `from reduce_op_kernels import reduce_ops`,
+          # and that module does `from util import parse_config` -- so without
+          # flatbuffers the build dies with
+          #   ImportError: cannot import name 'parse_config' from 'util'
+          # flatbuffers is only really consumed for per-operator type reduction;
+          # operator pruning works either way, but the symbol must be importable.
+          python -m pip install --upgrade pip
+          python -m pip install flatbuffers
+
       - name: Setup Ninja (unix)
         if: runner.os != 'Windows'
         uses: seanmiddleditch/gha-setup-ninja@master
