@@ -91,8 +91,8 @@ universal build.
 
 ### 3. Artifacts
 
-`onnxruntime/dist/onnxruntime-<version>-<target>.tar.gz` (`.zip` on Windows)
-plus a `.sha256` file:
+`onnxruntime/dist/onnxruntime-<version>-<target>.zip` plus a `.sha256` file.
+Every platform ships a zip, so consumers need only one extraction tool:
 
 ```
 onnxruntime-v1.29.0-linux-x86_64/
@@ -107,7 +107,8 @@ onnxruntime-v1.29.0-linux-x86_64/
     └── libonnxruntime.a  # single fat static library
 ```
 
-Windows produces `lib/onnxruntime.lib` and a `.zip` instead of a `.tar.gz`.
+Windows produces `lib/onnxruntime.lib` instead of `lib/libonnxruntime.a`; the
+archive is a zip there too.
 
 A static build has no single self-contained `libonnxruntime.a`: the
 `onnxruntime` CMake target is an `INTERFACE` library that pulls in the
@@ -262,6 +263,11 @@ Do not push a release tag to find out whether the pipeline works. Order:
    ```bash
    git tag release-v1.29.0 && git push origin release-v1.29.0
    ```
+
+The `release` job downloads every artifact, generates a download table from the
+archives that actually exist (platform, size, SHA-256), writes a combined
+`checksums.txt`, and attaches all of it to the GitHub release — so the file list
+can never drift out of sync with the build matrix.
 
 If a single target fails, `fail-fast: false` keeps the other five running, and
 re-running the workflow after pushing a fix rebuilds everything (there is no

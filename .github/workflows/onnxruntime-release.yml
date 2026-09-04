@@ -149,7 +149,6 @@ jobs:
         with:
           name: onnxruntime-${{ matrix.target }}
           path: |
-            ${{ env.ORT_PKG }}/dist/*.tar.gz
             ${{ env.ORT_PKG }}/dist/*.zip
             ${{ env.ORT_PKG }}/dist/*.sha256
           if-no-files-found: error
@@ -172,6 +171,88 @@ jobs:
       - name: List artifacts
         run: ls -lh dist
 
+      - name: Build release notes
+        # Generated from the artifacts that actually exist, so the download
+        # table can never drift out of sync with the build matrix.
+        run: |
+          set -euo pipefail
+          version="${{ needs.prepare.outputs.version }}"
+
+          platform_of() {
+            case "$1" in
+              linux-x86_64)  echo "Linux / x86_64" ;;
+              linux-aarch64) echo "Linux / aarch64" ;;
+              osx-arm64)     echo "macOS / arm64" ;;
+              osx-x86_64)    echo "macOS / x86_64" ;;
+              osx-universal) echo "macOS / arm64 + x86_64" ;;
+              windows-x64)   echo "Windows / x64" ;;
+              windows-arm64) echo "Windows / arm64" ;;
+              *)             echo "$1" ;;
+            esac
+          }
+
+          {
+            echo "Customized **static** onnxruntime ${version} build."
+            echo
+            echo "Configuration: \`Release\`, static library (\`onnxruntime_BUILD_SHARED_LIB=OFF\`),"
+            echo "\`--minimal_build --disable_contrib_ops --disable_ml_ops --disable_rtti --disable_exceptions\`."
+            echo "Upstream ships shared libraries only, hence this repo."
+            echo
+            echo "## Downloads"
+            echo
+            echo "| Artifact | Platform | Size | SHA-256 |"
+            echo "| --- | --- | --- | --- |"
+          } > notes.md
+
+          found=0
+          for archive in dist/*.zip; do
+            [ -e "$archive" ] || continue
+            found=$((found + 1))
+            name="$(basename "$archive")"
+            target="${name#onnxruntime-${version}-}"
+            target="${target%.zip}"
+            size="$(du -h "$archive" | cut -f1)"
+            sha="n/a"
+            [ -f "${archive}.sha256" ] && sha="$(cut -d' ' -f1 "${archive}.sha256")"
+            echo "| \`${name}\` | $(platform_of "$target") | ${size} | \`${sha}\` |" >> notes.md
+          done
+
+          if [ "$found" -eq 0 ]; then
+            echo "::error::no archives found to publish"
+            exit 1
+          fi
+
+          # one file with every checksum, for a single verification pass
+          cat dist/*.sha256 > dist/checksums.txt
+
+          {
+            echo
+            echo "## Contents"
+            echo
+            echo '```'
+            echo "onnxruntime-${version}-<target>/"
+            echo "  include/              public C/C++ headers (flattened, same as upstream packages)"
+            echo "  lib/libonnxruntime.a  single fat static library (.lib on Windows)"
+            echo "  BUILD_INFO.txt        version, target, source commit, configuration"
+            echo "  LICENSE"
+            echo '```'
+            echo
+            echo "## Usage"
+            echo
+            echo '```bash'
+            echo "unzip onnxruntime-${version}-linux-x86_64.zip"
+            echo "g++ app.cc -I onnxruntime-${version}-linux-x86_64/include \\"
+            echo "    onnxruntime-${version}-linux-x86_64/lib/libonnxruntime.a \\"
+            echo "    -lpthread -ldl -lm -o app"
+            echo '```'
+            echo
+            echo "Use \`g++\` (or add \`-lstdc++\`): this is a C++ library even when your own code is C."
+            echo
+            echo "Verify a download with \`sha256sum -c checksums.txt\`."
+          } >> notes.md
+
+          cat notes.md
+
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
@@ -179,19 +260,8 @@ jobs:
           name: onnxruntime ${{ needs.prepare.outputs.version }}
           draft: ${{ github.event_name == 'workflow_dispatch' && inputs.draft || false }}
           prerelease: false
-          generate_release_notes: true
-          files: dist/*
-          body: |
-            Customized onnxruntime ${{ needs.prepare.outputs.version }} build.
-
-            Configuration: `Release`, static library (`onnxruntime_BUILD_SHARED_LIB=OFF`),
-            `--minimal_build --disable_contrib_ops --disable_ml_ops --disable_rtti --disable_exceptions`.
-
-            | Artifact | Platform | Arch |
-            | --- | --- | --- |
-            | `onnxruntime-${{ needs.prepare.outputs.version }}-linux-x86_64.tar.gz` | Linux | x86_64 |
-            | `onnxruntime-${{ needs.prepare.outputs.version }}-linux-aarch64.tar.gz` | Linux | aarch64 |
-            | `onnxruntime-${{ needs.prepare.outputs.version }}-osx-arm64.tar.gz` | macOS | arm64 |
-            | `onnxruntime-${{ needs.prepare.outputs.version }}-osx-universal.tar.gz` | macOS | arm64 + x86_64 |
-            <!-- Windows entries return once the windows-x64 / windows-arm64
-                 matrix rows are re-enabled. -->
+          body_path: notes.md
+          files: |
+            dist/*.zip
+            dist/*.sha256
+            dist/checksums.txt

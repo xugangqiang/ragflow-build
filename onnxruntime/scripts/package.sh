@@ -41,10 +41,13 @@ done
 [ -n "$VERSION" ]    || { echo "error: --version is required" >&2; exit 1; }
 [ -n "$DIST_DIR" ]   || DIST_DIR="$PWD/dist"
 
+# Every platform ships a .zip so consumers only need one extraction tool.
+# Only the library file name differs between Windows and the rest.
 case "$TARGET" in
-    windows-*) LIB_EXT="lib" ; LIB_NAME="onnxruntime.lib" ; ARCHIVE_EXT="zip" ;;
-    *)         LIB_EXT="a"   ; LIB_NAME="libonnxruntime.a" ; ARCHIVE_EXT="tar.gz" ;;
+    windows-*) LIB_EXT="lib" ; LIB_NAME="onnxruntime.lib" ;;
+    *)         LIB_EXT="a"   ; LIB_NAME="libonnxruntime.a" ;;
 esac
+ARCHIVE_EXT="zip"
 
 # macOS universal builds merge both slices into <build>/universal
 PICK_DIR="$BUILD_DIR"
@@ -319,10 +322,13 @@ mkdir -p "$DIST_DIR"
 ARCHIVE_NAME="${PKG_NAME}.${ARCHIVE_EXT}"
 rm -f "$DIST_DIR/$ARCHIVE_NAME"
 
-if [ "$ARCHIVE_EXT" = "zip" ]; then
-    ( cd "$DIST_DIR" && tar -a -cf "$ARCHIVE_NAME" "$PKG_NAME" )
+# 'zip' when available (stores Unix permissions and symlinks correctly and does
+# not need an external compressor), otherwise fall back to tar's
+# --auto-compress, which picks the zip format from the .zip suffix.
+if command -v zip >/dev/null 2>&1; then
+    ( cd "$DIST_DIR" && zip -q -r -y "$ARCHIVE_NAME" "$PKG_NAME" )
 else
-    ( cd "$DIST_DIR" && tar -czf "$ARCHIVE_NAME" "$PKG_NAME" )
+    ( cd "$DIST_DIR" && tar -a -cf "$ARCHIVE_NAME" "$PKG_NAME" )
 fi
 
 if command -v sha256sum >/dev/null 2>&1; then
