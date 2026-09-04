@@ -92,7 +92,12 @@ echo "==> copied $copied_headers headers"
 # --- collect every static library --------------------------------------------
 # Includes the third party deps CMake builds under _deps/; only object dirs are
 # skipped.
-mapfile -t FOUND_LIBS < <(find "$PICK_DIR" -type f -name "*.${LIB_EXT}" \
+# while-read instead of mapfile: macOS ships bash 3.2, which has neither
+# mapfile nor associative arrays.
+FOUND_LIBS=()
+while IFS= read -r found_lib; do
+    [ -n "$found_lib" ] && FOUND_LIBS+=("$found_lib")
+done < <(find "$PICK_DIR" -type f -name "*.${LIB_EXT}" \
     -not -path '*/CMakeFiles/*' -print 2>/dev/null | sort)
 
 if [ ${#FOUND_LIBS[@]} -eq 0 ]; then
@@ -148,11 +153,24 @@ for lib in "${FOUND_LIBS[@]}"; do
 done
 [ ${#skipped[@]} -gt 0 ] && echo "==> skipping test/tooling libs: ${skipped[*]}"
 
-declare -A LIB_BY_KEY=()
+# A key -> path map, implemented with two parallel indexed arrays because bash
+# 3.2 (macOS) has no associative arrays. First match wins, so there is exactly
+# one canonical copy per library.
+LIB_KEYS=()
+LIB_PATHS=()
+lib_index_of() {
+    local needle="$1" idx
+    for ((idx = 0; idx < ${#LIB_KEYS[@]}; idx++)); do
+        if [ "${LIB_KEYS[$idx]}" = "$needle" ]; then
+            printf '%s' "$idx"
+            return 0
+        fi
+    done
+    return 1
+}
 for lib in "${ALL_LIBS[@]}"; do
     key="$(lib_key "$lib")"
-    # first match wins, keeps one canonical copy per library
-    [ -n "${LIB_BY_KEY[$key]:-}" ] || LIB_BY_KEY["$key"]="$lib"
+    lib_index_of "$key" >/dev/null || { LIB_KEYS+=("$key"); LIB_PATHS+=("$lib"); }
 done
 
 # reverse topological ordering taken from cmake/onnxruntime.cmake
@@ -187,14 +205,22 @@ ORDER=(
 
 ORDERED=()
 for wanted in "${ORDER[@]}"; do
-    if [ -n "${LIB_BY_KEY[$wanted]:-}" ]; then
-        ORDERED+=("${LIB_BY_KEY[$wanted]}")
-        unset "LIB_BY_KEY[$wanted]"
+    idx="$(lib_index_of "$wanted" || true)"
+    if [ -n "$idx" ]; then
+        ORDERED+=("${LIB_PATHS[$idx]}")
+        # drop it so it does not get appended again below
+        unset "LIB_KEYS[$idx]" "LIB_PATHS[$idx]"
+        LIB_KEYS=(${LIB_KEYS[@]+"${LIB_KEYS[@]}"})
+        LIB_PATHS=(${LIB_PATHS[@]+"${LIB_PATHS[@]}"})
     fi
 done
+# remaining keys, alphabetically. The keys and paths stay aligned because both
+# arrays are compacted together above.
 while IFS= read -r key; do
-    [ -n "$key" ] && ORDERED+=("${LIB_BY_KEY[$key]}")
-done < <(printf '%s\n' "${!LIB_BY_KEY[@]}" | sort)
+    [ -z "$key" ] && continue
+    idx="$(lib_index_of "$key" || true)"
+    [ -n "$idx" ] && ORDERED+=("${LIB_PATHS[$idx]}")
+done < <(printf '%s\n' ${LIB_KEYS[@]+"${LIB_KEYS[@]}"} | sort)
 
 echo "==> merging ${#ORDERED[@]} static libraries into $LIB_NAME"
 

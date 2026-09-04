@@ -63,7 +63,7 @@ identical. Anything you pass is forwarded to upstream
 
 | Option | Description |
 | --- | --- |
-| `--target <name>` | `linux-x86_64`, `linux-aarch64`, `osx-arm64`, `osx-x86_64`, `osx-universal`, `windows-x64`, `windows-arm64`. Default: detected from the host. |
+| `--target <name>` | `linux-x86_64`, `linux-aarch64`, `osx-arm64`, `osx-x86_64`, `osx-universal`, `windows-x64`, `windows-arm64`. Default: detected from the host. Windows targets are implemented but not exercised in CI right now, see [Platform status](#platform-status). |
 | `--build-dir <path>` | Build root. Default `onnxruntime/build/<target>`. |
 | `--dist-dir <path>` | Where the archive lands. Default `onnxruntime/dist`. |
 | `--jobs <n>`, `-j <n>` | Max parallel compile jobs. Default: one per core, capped at 4 when less than 8 GB of RAM is free. |
@@ -162,8 +162,8 @@ normal link.
 
 ## Releasing
 
-`.github/workflows/onnxruntime-release.yml` builds all six targets in parallel
-and publishes them to a GitHub release.
+`.github/workflows/onnxruntime-release.yml` builds all enabled targets in
+parallel and publishes them to a GitHub release.
 
 ### Cutting a release
 
@@ -183,7 +183,7 @@ git push origin main --tags
 
 | Trigger | Version source | Behaviour |
 | --- | --- | --- |
-| push tag `release-v*` | parsed from the tag name | Build all 6 targets, publish a **public** release |
+| push tag `release-v*` | parsed from the tag name | Build all enabled targets, publish a **public** release |
 | push tag `onnxruntime-v*` | parsed from the tag name | same — preferred once the repo vendors more than one dependency |
 | `workflow_dispatch` | the `ort_version` input, else `ORT_VERSION` | `draft` (default on) and `dry_run` available |
 
@@ -192,14 +192,37 @@ it the workflow emits a warning so the drift does not go unnoticed.
 
 Runner mapping:
 
-| Target | Runner | Notes |
+| Target | Runner | Status |
 | --- | --- | --- |
-| `linux-x86_64` | `ubuntu-latest` | native |
-| `linux-aarch64` | `ubuntu-24.04-arm` | native arm64 |
-| `osx-arm64` | `macos-latest` | native arm64 |
-| `osx-universal` | `macos-latest` | two slices merged with `lipo` |
-| `windows-x64` | `windows-latest` | Visual Studio generator |
-| `windows-arm64` | `windows-latest` | MSVC `amd64_arm64` cross tools |
+| `linux-x86_64` | `ubuntu-latest` | ✅ native, verified end to end |
+| `linux-aarch64` | `ubuntu-24.04-arm` | ⏳ native arm64, not yet run |
+| `osx-arm64` | `macos-latest` | ⏳ native arm64, not yet run |
+| `osx-universal` | `macos-latest` | ⏳ two slices merged with `lipo`, not yet run |
+| `windows-x64` | `windows-latest` | ⛔ disabled, see below |
+| `windows-arm64` | `windows-latest` | ⛔ disabled, see below |
+
+### Platform status
+
+**Windows is disabled in CI.** The runner image has no Visual Studio instance,
+so CMake configure fails:
+
+```
+CMake Error at CMakeLists.txt:11 (project):
+  Generator
+    Visual Studio 17 2022
+  could not find any instance of Visual Studio.
+```
+
+`build.sh` still implements `windows-x64` and `windows-arm64` — only the matrix
+rows in the workflow are commented out. To re-enable, uncomment the two
+`windows-*` entries in `.github/workflows/onnxruntime-release.yml` (and restore
+the Windows rows in the release body table). Packaging additionally needs MSVC's
+`lib.exe`, which `scripts/package.sh` locates via `PATH` or `vswhere.exe`.
+
+**Shell compatibility: the scripts target bash 3.2.** macOS ships bash 3.2,
+which has no associative arrays (`declare -A`) and no `mapfile`. Everything is
+written with plain indexed arrays and `while read` loops, so the same code runs
+on the macOS runner, on Linux, and in Git Bash on Windows.
 
 ### Testing the workflow before a real release
 
@@ -215,7 +238,7 @@ Do not push a release tag to find out whether the pipeline works. Order:
    [`actionlint`](https://github.com/rhysd/actionlint) goes further and catches
    expression and context mistakes.
 
-2. **Dry run on GitHub, all six targets.** Push the branch, then
+2. **Dry run on GitHub, all enabled targets.** Push the branch, then
    Actions → *onnxruntime release* → **Run workflow** with
    `dry_run = true`. Every platform builds and uploads artifacts, nothing is
    published. Download the artifacts and smoke test one of them.

@@ -68,7 +68,18 @@ DEFAULT_CMAKE_DEFINES=(
 
 USER_ARGS=()          # everything forwarded to build.py as-is
 USER_CMAKE_DEFINES=() # collected separately so they can be merged
-declare -A SEEN_FLAGS=()
+# Flags the caller passed explicitly, so the defaults below can skip them.
+# Kept as a plain indexed array + helper: macOS still ships bash 3.2, which has
+# no associative arrays (declare -A).
+SEEN_FLAGS=()
+mark_seen() { SEEN_FLAGS+=("$1"); }
+has_seen() {
+    local needle="$1" item
+    for item in ${SEEN_FLAGS[@]+"${SEEN_FLAGS[@]}"}; do
+        [ "$item" = "$needle" ] && return 0
+    done
+    return 1
+}
 
 die()  { echo "error: $*" >&2; exit 1; }
 info() { echo "==> $*"; }
@@ -187,13 +198,13 @@ while [ $# -gt 0 ]; do
         --cmake_extra_defines)
             [ $# -ge 2 ] || die "--cmake_extra_defines requires a value"
             USER_CMAKE_DEFINES+=("$2")
-            SEEN_FLAGS["--cmake_extra_defines"]=1
+            mark_seen "--cmake_extra_defines"
             shift 2 ;;
         --config|--build_dir|--cmake_generator|--osx_arch|--path_to_protoc_exe|--target|-t)
             # handled or rejected below; stay out of the default merging
             die "'$1' is managed by this script, use the documented project options instead" ;;
         --minimal_build|--disable_contrib_ops|--disable_ml_ops|--disable_rtti|--disable_exceptions|--parallel|--update|--clean|--skip_tests)
-            USER_ARGS+=("$1"); SEEN_FLAGS["$1"]=1; shift ;;
+            USER_ARGS+=("$1"); mark_seen "$1"; shift ;;
         *)
             USER_ARGS+=("$1"); shift ;;
     esac
@@ -241,7 +252,7 @@ ORT_ARGS=()
 
 # default flags the user did not specify explicitly
 for flag in "${DEFAULT_FLAGS[@]}"; do
-    if [ -z "${SEEN_FLAGS[$flag]:-}" ]; then
+    if ! has_seen "$flag"; then
         ORT_ARGS+=("$flag")
     fi
 done
@@ -250,7 +261,7 @@ done
 # "one job per core", '--parallel N' means at most N.
 if [ -n "$JOBS" ]; then
     ORT_ARGS+=(--parallel "$JOBS")
-elif [ -z "${SEEN_FLAGS[--parallel]:-}" ]; then
+elif ! has_seen "--parallel"; then
     ORT_ARGS+=(--parallel "$(default_jobs)")
 fi
 
@@ -259,7 +270,7 @@ i=0
 while [ $i -lt ${#DEFAULT_KV[@]} ]; do
     key="${DEFAULT_KV[$i]}"
     val="${DEFAULT_KV[$((i + 1))]}"
-    if [ -z "${SEEN_FLAGS[$key]:-}" ]; then
+    if ! has_seen "$key"; then
         ORT_ARGS+=("$key" "$val")
     fi
     i=$((i + 2))
@@ -280,13 +291,13 @@ if [ "$(host_os)" != "windows" ] && ! printf '%s\n' "${USER_ARGS[@]}" | grep -qx
 fi
 
 # newer compilers trip -Werror in the upstream tree
-if [ -z "${SEEN_FLAGS[--compile_no_warning_as_error]:-}" ]; then
+if ! has_seen "--compile_no_warning_as_error"; then
     ORT_ARGS+=(--compile_no_warning_as_error)
 fi
 
 # build.py runs ctest by default, which pulls hundreds of MB of ONNX test data.
 # A release build only needs the library; pass --test to opt back in.
-if [ -z "${SEEN_FLAGS[--test]:-}" ] && [ -z "${SEEN_FLAGS[--skip_tests]:-}" ]; then
+if ! has_seen "--test" && ! has_seen "--skip_tests"; then
     ORT_ARGS+=(--skip_tests)
 fi
 

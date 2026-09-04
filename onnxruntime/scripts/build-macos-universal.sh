@@ -27,7 +27,11 @@ UNIVERSAL_DIR="$BUILD_DIR/universal"
 rm -rf "$UNIVERSAL_DIR"
 mkdir -p "$UNIVERSAL_DIR"
 
-mapfile -t REL_LIBS < <(cd "$BUILD_DIR/arm64" && find . -type f -name '*.a' \
+# while-read instead of mapfile: bash 3.2 on macOS has no mapfile
+REL_LIBS=()
+while IFS= read -r rel_lib; do
+    [ -n "$rel_lib" ] && REL_LIBS+=("$rel_lib")
+done < <(cd "$BUILD_DIR/arm64" && find . -type f -name '*.a' \
     -not -path '*/CMakeFiles/*' | sort)
 
 if [ ${#REL_LIBS[@]} -eq 0 ]; then

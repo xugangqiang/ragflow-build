@@ -94,10 +94,17 @@ jobs:
             os: macos-latest
           - target: osx-universal
             os: macos-latest
-          - target: windows-x64
-            os: windows-latest
-          - target: windows-arm64
-            os: windows-latest
+          # Windows is disabled for now: the runner image has no Visual Studio
+          # instance, so CMake configure dies with
+          #   Generator "Visual Studio 17 2022" could not find any instance of
+          #   Visual Studio.
+          # onnxruntime/build.sh already supports both windows-x64 and
+          # windows-arm64; uncomment these once a runner with the MSVC
+          # toolchain (and vcvarsall / lib.exe for packaging) is available.
+          # - target: windows-x64
+          #   os: windows-latest
+          # - target: windows-arm64
+          #   os: windows-latest
 
     steps:
       - name: Checkout
@@ -186,5 +193,5 @@ jobs:
             | `onnxruntime-${{ needs.prepare.outputs.version }}-linux-aarch64.tar.gz` | Linux | aarch64 |
             | `onnxruntime-${{ needs.prepare.outputs.version }}-osx-arm64.tar.gz` | macOS | arm64 |
             | `onnxruntime-${{ needs.prepare.outputs.version }}-osx-universal.tar.gz` | macOS | arm64 + x86_64 |
-            | `onnxruntime-${{ needs.prepare.outputs.version }}-windows-x64.zip` | Windows | x64 |
-            | `onnxruntime-${{ needs.prepare.outputs.version }}-windows-arm64.zip` | Windows | arm64 |
+            <!-- Windows entries return once the windows-x64 / windows-arm64
+                 matrix rows are re-enabled. -->
