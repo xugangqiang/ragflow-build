@@ -1,0 +1,165 @@
+name: onnxruntime release
+
+# Build scripts live in onnxruntime/ (one directory per vendored dependency).
+# GitHub only loads workflows from .github/workflows, hence this file lives
+# here while everything it executes lives under onnxruntime/.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      ort_version:
+        description: 'onnxruntime tag to build (default: onnxruntime/ORT_VERSION)'
+        required: false
+        default: ''
+      dry_run:
+        description: 'Build only, do not publish a GitHub release'
+        type: boolean
+        default: false
+      draft:
+        description: 'Publish the release as a draft'
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+env:
+  # keep in sync with onnxruntime/ORT_VERSION when bumping manually
+  ORT_PKG: onnxruntime
+
+jobs:
+  prepare:
+    name: prepare
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.value }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: version
+        name: Resolve onnxruntime version
+        run: |
+          set -euo pipefail
+          version="${{ github.event.inputs.ort_version }}"
+          if [ -z "$version" ]; then
+            version="$(tr -d '[:space:]' < "${{ env.ORT_PKG }}/ORT_VERSION")"
+          fi
+          echo "value=$version" >> "$GITHUB_OUTPUT"
+          echo "onnxruntime version: $version"
+
+  build:
+    name: build ${{ matrix.target }}
+    needs: prepare
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-x86_64
+            os: ubuntu-latest
+          # Native arm64 runner. If your repo has no access to arm runners,
+          # change os to ubuntu-latest: onnxruntime/build.sh then falls back to
+          # aarch64 cross compilation (see scripts/cross-linux-aarch64.sh).
+          - target: linux-aarch64
+            os: ubuntu-24.04-arm
+          - target: osx-arm64
+            os: macos-latest
+          - target: osx-universal
+            os: macos-latest
+          - target: windows-x64
+            os: windows-latest
+          - target: windows-arm64
+            os: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Setup Ninja (unix)
+        if: runner.os != 'Windows'
+        uses: seanmiddleditch/gha-setup-ninja@master
+
+      - name: Setup MSVC (windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{ matrix.target == 'windows-arm64' && 'amd64_arm64' || 'x64' }}
+
+      - name: Fetch onnxruntime ${{ needs.prepare.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "${{ needs.prepare.outputs.version }}" > "${{ env.ORT_PKG }}/ORT_VERSION"
+          bash "${{ env.ORT_PKG }}/scripts/init-submodules.sh"
+
+      - name: Build ${{ matrix.target }}
+        shell: bash
+        run: |
+          # Equivalent to:
+          #   --config Release
+          #   --cmake_extra_defines onnxruntime_BUILD_SHARED_LIB=OFF
+          #   --minimal_build --disable_contrib_ops --disable_ml_ops
+          #   --disable_rtti --disable_exceptions --parallel
+          bash "${{ env.ORT_PKG }}/build.sh" --target "${{ matrix.target }}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: onnxruntime-${{ matrix.target }}
+          path: |
+            ${{ env.ORT_PKG }}/dist/*.tar.gz
+            ${{ env.ORT_PKG }}/dist/*.zip
+            ${{ env.ORT_PKG }}/dist/*.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: release
+    needs: [prepare, build]
+    if: ${{ github.event_name != 'workflow_dispatch' || !inputs.dry_run }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -lh dist
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event_name == 'workflow_dispatch' && format('onnxruntime-{0}', needs.prepare.outputs.version) || github.ref_name }}
+          name: onnxruntime ${{ needs.prepare.outputs.version }}
+          draft: ${{ github.event_name == 'workflow_dispatch' && inputs.draft || false }}
+          prerelease: false
+          generate_release_notes: true
+          files: dist/*
+          body: |
+            Customized onnxruntime ${{ needs.prepare.outputs.version }} build.
+
+            Configuration: `Release`, static library (`onnxruntime_BUILD_SHARED_LIB=OFF`),
+            `--minimal_build --disable_contrib_ops --disable_ml_ops --disable_rtti --disable_exceptions`.
+
+            | Artifact | Platform | Arch |
+            | --- | --- | --- |
+            | `onnxruntime-${{ needs.prepare.outputs.version }}-linux-x86_64.tar.gz` | Linux | x86_64 |
+            | `onnxruntime-${{ needs.prepare.outputs.version }}-linux-aarch64.tar.gz` | Linux | aarch64 |
+            | `onnxruntime-${{ needs.prepare.outputs.version }}-osx-arm64.tar.gz` | macOS | arm64 |
+            | `onnxruntime-${{ needs.prepare.outputs.version }}-osx-universal.tar.gz` | macOS | arm64 + x86_64 |
+            | `onnxruntime-${{ needs.prepare.outputs.version }}-windows-x64.zip` | Windows | x64 |
+            | `onnxruntime-${{ needs.prepare.outputs.version }}-windows-arm64.zip` | Windows | arm64 |
