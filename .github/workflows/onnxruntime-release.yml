@@ -7,7 +7,11 @@ name: onnxruntime release
 on:
   push:
     tags:
-      - 'v*'
+      # The tag carries the version: pushing release-v1.30.0 builds and
+      # publishes onnxruntime v1.30.0. The onnxruntime-v* form is accepted too,
+      # and is the safer choice once this repo vendors more than one dependency.
+      - 'release-v*'
+      - 'onnxruntime-v*'
   workflow_dispatch:
     inputs:
       ort_version:
@@ -40,14 +44,35 @@ jobs:
       - uses: actions/checkout@v4
       - id: version
         name: Resolve onnxruntime version
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_VERSION: ${{ github.event.inputs.ort_version }}
         run: |
           set -euo pipefail
-          version="${{ github.event.inputs.ort_version }}"
-          if [ -z "$version" ]; then
-            version="$(tr -d '[:space:]' < "${{ env.ORT_PKG }}/ORT_VERSION")"
+          # 1. tag push: the tag name carries the version
+          # 2. manual run: the ort_version input
+          # 3. fallback: whatever is pinned in onnxruntime/ORT_VERSION
+          version=""
+          case "$REF_NAME" in
+            release-v*)     version="${REF_NAME#release-}" ;;
+            onnxruntime-v*) version="${REF_NAME#onnxruntime-}" ;;
+          esac
+          [ -n "$version" ] || version="$INPUT_VERSION"
+          [ -n "$version" ] || version="$(tr -d '[:space:]' < "${{ env.ORT_PKG }}/ORT_VERSION")"
+
+          pinned="$(tr -d '[:space:]' < "${{ env.ORT_PKG }}/ORT_VERSION")"
+          if [ "$version" != "$pinned" ]; then
+            echo "::warning::building $version but ${ORT_PKG}/ORT_VERSION pins $pinned"
+            echo "::warning::run 'onnxruntime/scripts/bump.sh $version' and commit to keep them in sync"
           fi
+
+          case "$version" in
+            v*) : ;;
+            *) echo "::error::version '$version' must start with 'v' (e.g. v1.29.0)"; exit 1 ;;
+          esac
+
           echo "value=$version" >> "$GITHUB_OUTPUT"
-          echo "onnxruntime version: $version"
+          echo "onnxruntime version: $version (trigger: ${{ github.event_name }}, ref: $REF_NAME)"
 
   build:
     name: build ${{ matrix.target }}

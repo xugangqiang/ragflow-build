@@ -165,16 +165,30 @@ normal link.
 `.github/workflows/onnxruntime-release.yml` builds all six targets in parallel
 and publishes them to a GitHub release.
 
-Triggers:
+### Cutting a release
 
-| Trigger | Behaviour |
-| --- | --- |
-| push tag `v*` | Build all targets, publish a **public** release on that tag. |
-| `workflow_dispatch` | Manual run. Optional `ort_version` overrides `ORT_VERSION`; `draft` (default on) and `dry_run` are available. |
+The tag carries the version — push it and the matching release is built and
+published:
 
 ```bash
-git tag v1.29.0 && git push origin v1.29.0
+onnxruntime/scripts/bump.sh v1.30.0          # see "Upgrading" below
+cd onnxruntime && ./build.sh --jobs 4         # verify locally first
+git add onnxruntime/ORT_VERSION onnxruntime/onnxruntime
+git commit -m "onnxruntime: bump to v1.30.0"
+git tag release-v1.30.0
+git push origin main --tags
 ```
+
+`release-v1.30.0` → builds and publishes onnxruntime **v1.30.0** on that tag.
+
+| Trigger | Version source | Behaviour |
+| --- | --- | --- |
+| push tag `release-v*` | parsed from the tag name | Build all 6 targets, publish a **public** release |
+| push tag `onnxruntime-v*` | parsed from the tag name | same — preferred once the repo vendors more than one dependency |
+| `workflow_dispatch` | the `ort_version` input, else `ORT_VERSION` | `draft` (default on) and `dry_run` available |
+
+`ORT_VERSION` remains the local development default. If the tag disagrees with
+it the workflow emits a warning so the drift does not go unnoticed.
 
 Runner mapping:
 
@@ -186,6 +200,83 @@ Runner mapping:
 | `osx-universal` | `macos-latest` | two slices merged with `lipo` |
 | `windows-x64` | `windows-latest` | Visual Studio generator |
 | `windows-arm64` | `windows-latest` | MSVC `amd64_arm64` cross tools |
+
+### Testing the workflow before a real release
+
+Do not push a release tag to find out whether the pipeline works. Order:
+
+1. **Syntax / config check, no runner time.** Validate the YAML and confirm the
+   matrix resolves as intended:
+
+   ```bash
+   python3 -c "import yaml;d=yaml.safe_load(open('.github/workflows/onnxruntime-release.yml'));print([m['target'] for m in d['jobs']['build']['strategy']['matrix']['include']])"
+   ```
+
+   [`actionlint`](https://github.com/rhysd/actionlint) goes further and catches
+   expression and context mistakes.
+
+2. **Dry run on GitHub, all six targets.** Push the branch, then
+   Actions → *onnxruntime release* → **Run workflow** with
+   `dry_run = true`. Every platform builds and uploads artifacts, nothing is
+   published. Download the artifacts and smoke test one of them.
+
+   > The workflow must exist on the **default branch** before `Run workflow`
+   > appears in the UI. Push it to `main` first (a dry run publishes nothing).
+
+3. **Optional: run it locally with `act`.**
+   [nektos/act](https://github.com/nektos/act) executes workflows in Docker.
+   It only covers the `ubuntu-*` jobs — macOS and Windows runners cannot be
+   emulated — but it is the fastest way to debug the shell steps:
+
+   ```bash
+   act workflow_dispatch -W .github/workflows/onnxruntime-release.yml \
+       -j build --matrix target:linux-x86_64 \
+       --input ort_version=v1.29.0 --input dry_run=true
+   ```
+
+4. **Real release.** Only after the dry run is green:
+
+   ```bash
+   git tag release-v1.29.0 && git push origin release-v1.29.0
+   ```
+
+If a single target fails, `fail-fast: false` keeps the other five running, and
+re-running the workflow after pushing a fix rebuilds everything (there is no
+build cache between runs).
+
+### Upgrading onnxruntime
+
+```bash
+onnxruntime/scripts/bump.sh v1.30.0
+```
+
+That verifies the tag exists upstream, writes it to `onnxruntime/ORT_VERSION`,
+checks the submodule out at it (`--depth 1`) and refreshes the recursive deps.
+Then verify and commit:
+
+```bash
+cd onnxruntime && ./build.sh --jobs 4
+git add onnxruntime/ORT_VERSION onnxruntime/onnxruntime
+git commit -m "onnxruntime: bump to v1.30.0"
+```
+
+Finally push `release-v1.30.0` to build and publish the new version.
+
+Two things worth knowing:
+
+- **`ORT_VERSION` is the local default, the tag is what ships.** On a tag push
+  the version is parsed from the tag, so bumping the file alone does not
+  trigger anything. Keep them in sync (the workflow warns when they drift) —
+  `bump.sh` updates the file, and the tag you push should match it.
+- **Recursive deps change between releases.** `bump.sh` re-runs
+  `git submodule update --init --recursive`, because upstream regularly moves
+  the pinned abseil / protobuf / onnx revisions.
+
+To list available upstream tags:
+
+```bash
+git -C onnxruntime/onnxruntime ls-remote --tags origin | grep -oE 'refs/tags/v[0-9.]+$' | sort -V | tail
+```
 
 ### Notes
 
