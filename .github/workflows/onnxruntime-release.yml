@@ -140,8 +140,12 @@ jobs:
           # Equivalent to:
           #   --config Release
           #   --cmake_extra_defines onnxruntime_BUILD_SHARED_LIB=OFF
-          #   --minimal_build --disable_contrib_ops --disable_ml_ops
+          #   --minimal_build --disable_ml_ops
           #   --disable_rtti --disable_exceptions --parallel
+          # (--include_ops_by_config is applied by build.sh's default;
+          #  --disable_contrib_ops is intentionally NOT set — the deepdoc
+          #  models need com.microsoft contrib fusion ops FusedConv/
+          #  FusedMatMul/QuickGelu.)
           bash "${{ env.ORT_PKG }}/build.sh" --target "${{ matrix.target }}"
 
       - name: Upload artifact
@@ -195,7 +199,7 @@ jobs:
             echo "Customized **static** onnxruntime ${version} build."
             echo
             echo "Configuration: \`Release\`, static library (\`onnxruntime_BUILD_SHARED_LIB=OFF\`),"
-            echo "\`--minimal_build --disable_contrib_ops --disable_ml_ops --disable_rtti --disable_exceptions\`."
+            echo "\`--minimal_build --disable_ml_ops --disable_rtti --disable_exceptions\`"
             echo "Upstream ships shared libraries only, hence this repo."
             echo
             echo "## Downloads"
