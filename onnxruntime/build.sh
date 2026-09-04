@@ -49,11 +49,13 @@ DO_UPDATE=0
 DO_CLEAN=0
 DO_PACKAGE=1
 EXPLICIT_BUILD_ROOT=0
+JOBS=""
 
 # --- defaults requested by this project ------------------------------------
 # store_true style flags that are ON unless the user passes them explicitly
+# (--parallel is handled separately so it can take a job count)
 DEFAULT_FLAGS=(--minimal_build --disable_contrib_ops --disable_ml_ops \
-               --disable_rtti --disable_exceptions --parallel)
+               --disable_rtti --disable_exceptions)
 # --key value style defaults
 DEFAULT_KV=(--config Release)
 # -D style defaults (user values are appended, so they win)
@@ -81,13 +83,16 @@ Project options:
                         Default: auto-detected from the host.
   --build-dir <path>    Build root. Default: ${BUILD_ROOT}
   --dist-dir <path>     Directory for packaged artifacts. Default: ${DIST_DIR}
+  --jobs <n>, -j <n>    Max parallel compile jobs. Default: one per core, capped
+                        at 4 when less than 8 GB of RAM is free (onnxruntime
+                        translation units need ~1-1.5 GB each).
   --update              Run 'git submodule update --init --recursive' first.
   --clean               Delete the build directory for this target first.
   --no-package          Build only, do not create a tarball/zip in --dist-dir.
   -h, --help            Show this help.
 
 Default onnxruntime options (skipped when you pass them yourself):
-  ${DEFAULT_KV[*]} ${DEFAULT_FLAGS[*]}
+  ${DEFAULT_KV[*]} ${DEFAULT_FLAGS[*]} --parallel <jobs>
   --cmake_extra_defines ${DEFAULT_CMAKE_DEFINES[*]}
   --cmake_generator Ninja   (only when ninja is installed)
   --skip_tests              (build.py runs ctest by default, pass --test to keep it)
@@ -131,6 +136,32 @@ detect_target() {
     esac
 }
 
+# onnxruntime translation units are memory hungry (~1-1.5 GB each). On a box
+# with little free RAM, building with one job per core gets OOM killed, so cap
+# the default when memory is tight. --jobs always wins.
+default_jobs() {
+    local ncpu avail_mb jobs
+    ncpu="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"
+    jobs="$ncpu"
+    avail_mb=0
+    if [ -r /proc/meminfo ]; then
+        avail_mb="$(awk '/MemAvailable/ {print int($2/1024)}' /proc/meminfo 2>/dev/null || echo 0)"
+    elif [ "$(host_os)" = "osx" ] && command -v vm_stat >/dev/null 2>&1; then
+        # free + speculative + file-backed pages, in MB
+        avail_mb="$(vm_stat 2>/dev/null | awk '
+            /Pages free/            { f = $3 }
+            /Pages speculative/     { s = $3 }
+            /File-backed pages/     { b = $3 }
+            END { gsub(/\./, "", f); gsub(/\./, "", s); gsub(/\./, "", b)
+                  printf "%d", (f + s + b) * 4096 / 1048576 }')"
+    fi
+    if [ "${avail_mb:-0}" -gt 0 ] && [ "$avail_mb" -lt 8192 ] 2>/dev/null; then
+        jobs=4
+        [ "$ncpu" -lt 4 ] && jobs="$ncpu"
+    fi
+    echo "$jobs"
+}
+
 # ---------------------------------------------------------------------------
 # argument parsing
 # ---------------------------------------------------------------------------
@@ -145,6 +176,9 @@ while [ $# -gt 0 ]; do
         --dist-dir)
             [ $# -ge 2 ] || die "--dist-dir requires a value"
             DIST_DIR="$2"; shift 2 ;;
+        --jobs|-j)
+            [ $# -ge 2 ] || die "--jobs requires a value"
+            JOBS="$2"; shift 2 ;;
         --update)   DO_UPDATE=1; shift ;;
         --clean)    DO_CLEAN=1; shift ;;
         --package)  DO_PACKAGE=1; shift ;;
@@ -212,6 +246,14 @@ for flag in "${DEFAULT_FLAGS[@]}"; do
     fi
 done
 
+# --parallel. build.py takes an optional job count: bare '--parallel' means
+# "one job per core", '--parallel N' means at most N.
+if [ -n "$JOBS" ]; then
+    ORT_ARGS+=(--parallel "$JOBS")
+elif [ -z "${SEEN_FLAGS[--parallel]:-}" ]; then
+    ORT_ARGS+=(--parallel "$(default_jobs)")
+fi
+
 # default key/value pairs the user did not specify explicitly
 i=0
 while [ $i -lt ${#DEFAULT_KV[@]} ]; do
@@ -270,11 +312,44 @@ if [ "$DO_CLEAN" -eq 1 ]; then
     rm -rf "$BUILD_DIR"
 fi
 
+# A static build turns `onnxruntime` into an INTERFACE library, so external deps
+# that are only reachable through INTERFACE_LINK_LIBRARIES never enter the build
+# graph and are left uncompiled. re2 is one of them: the RegexFullMatch kernel
+# references re2::RE2, but nothing depends on the re2 target, so the final link
+# dies with "undefined reference to re2::RE2::RE2". Build those targets by hand.
+MISSING_INTERFACE_DEPS=(re2)
+
+ort_config() {
+    local i
+    for ((i = 0; i < ${#ORT_ARGS[@]}; i++)); do
+        if [ "${ORT_ARGS[$i]}" = "--config" ]; then
+            printf '%s' "${ORT_ARGS[$((i + 1))]}"
+            return
+        fi
+    done
+    echo Release
+}
+
+build_interface_only_deps() {
+    local build_dir="$1" bin_dir dep found
+    bin_dir="$(find "$build_dir" -name CMakeCache.txt -print -quit 2>/dev/null)"
+    [ -n "$bin_dir" ] || return 0
+    bin_dir="$(dirname "$bin_dir")"
+    for dep in "${MISSING_INTERFACE_DEPS[@]}"; do
+        found="$(find "$build_dir" \( -name "lib${dep}.a" -o -name "${dep}.lib" \) -print -quit 2>/dev/null)"
+        [ -n "$found" ] && continue
+        info "building external dependency that the static build graph skips: $dep"
+        cmake --build "$bin_dir" --config "$(ort_config)" --target "$dep" \
+            || echo "warning: target '$dep' could not be built" >&2
+    done
+}
+
 ort_build() {
     local build_dir="$1"; shift
     info "building onnxruntime $ORT_VERSION for $TARGET in $build_dir"
     mkdir -p "$build_dir"
     ( cd "$ORT_SRC" && "$PYTHON" "$ORT_BUILD_PY" --build_dir "$build_dir" "$@" )
+    build_interface_only_deps "$build_dir"
 }
 
 case "$TARGET" in

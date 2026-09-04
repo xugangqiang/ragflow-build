@@ -118,6 +118,18 @@ EXCLUDE_LIBS=(
     onnx_test_data_proto onnx_test_runner_common
     benchmark benchmark_main
     protoc protoc_lib
+    # Full protobuf. onnxruntime uses protobuf-lite (onnxruntime_USE_FULL_PROTOBUF
+    # is off); the full lib only exists for protoc and drags in a zlib dependency
+    # (deflate/inflate) that consumers would otherwise have to link with -lz.
+    # Note this is matched exactly, so libprotobuf-lite.a is kept.
+    protobuf libprotobuf
+    # Third party flatbuffers. Loading an .ort model only needs the header only
+    # template types (flatbuffers::String / Vector / Offset); the actual runtime
+    # features of libflatbuffers.a (schema Parser, reflection, Verifier) are not
+    # referenced. Verified by a --whole-archive link with and without it: zero
+    # new undefined symbols. libonnxruntime_flatbuffers.a (the ORT schema
+    # wrappers, onnxruntime::fbs::utils::*) is NOT excluded, that one is needed.
+    flatbuffers
 )
 
 ALL_LIBS=()
@@ -158,7 +170,7 @@ ORDER=(
     onnxruntime_flatbuffers
     onnx onnx_proto
     protobuf-lite libprotobuf-lite protobuf libprotobuf
-    re2 flatbuffers
+    re2
     # only used when the platform actually builds them (date/nsync are header
     # only or absent on most targets); unknown entries are simply skipped
     date nsync cpuinfo

@@ -66,10 +66,15 @@ identical. Anything you pass is forwarded to upstream
 | `--target <name>` | `linux-x86_64`, `linux-aarch64`, `osx-arm64`, `osx-x86_64`, `osx-universal`, `windows-x64`, `windows-arm64`. Default: detected from the host. |
 | `--build-dir <path>` | Build root. Default `onnxruntime/build/<target>`. |
 | `--dist-dir <path>` | Where the archive lands. Default `onnxruntime/dist`. |
+| `--jobs <n>`, `-j <n>` | Max parallel compile jobs. Default: one per core, capped at 4 when less than 8 GB of RAM is free. |
 | `--update` | Run `git submodule update --init --recursive` first. |
 | `--clean` | Wipe the build directory for this target first. |
 | `--no-package` | Build only, skip the tarball/zip. |
 | `-h`, `--help` | Full help. |
+
+onnxruntime translation units are memory hungry (~1–1.5 GB each), so building
+with one job per core gets OOM killed on a small machine. Use `--jobs 2` if 4 is
+still too much.
 
 Extra defaults applied on top:
 
@@ -120,6 +125,38 @@ g++ app.cc -I<pkg>/include <pkg>/lib/libonnxruntime.a -lpthread -ldl -lm -o app
 Because everything lives in one archive, the linker rescans it until all
 symbols resolve — no manual link order is needed. Use `g++` (or add
 `-lstdc++`): this is a C++ library even when your own code is C.
+
+The measured `linux-x86_64` result is **7.6 MB** compressed / **35 MB**
+uncompressed — versus ~200 MB for a default full build.
+
+#### What goes into the fat archive
+
+`--minimal_build` drops CUDA, contrib ops and ML ops, but **not** the ONNX
+protobuf layer, which ORT still needs to read model metadata and opsets. These
+are genuine dependencies, verified with `nm --undefined-only` on the component
+libs (`onnxruntime_framework` alone references ~251 abseil, 94 onnx and 45
+protobuf symbols):
+
+- abseil (~70 archives), onnx, onnx_proto, protobuf-**lite**, re2, cpuinfo
+- `onnxruntime_flatbuffers` — the ORT schema wrappers (`onnxruntime::fbs::utils::*`)
+
+Everything else is stripped out:
+
+| Excluded | Why |
+| --- | --- |
+| gtest / gmock | test framework; also never downloaded (`onnxruntime_BUILD_UNIT_TESTS=OFF`) |
+| `onnxruntime_test_utils`, `onnxruntime_unittest_utils` | test helpers |
+| `onnx_test_data_proto`, `onnx_test_runner_common` | test data |
+| `protoc` | code generator, not needed at runtime |
+| `protobuf` (full) | onnxruntime uses protobuf-lite; the full lib only exists for protoc and would force consumers to link `-lz` |
+| `flatbuffers` (third party) | Loading an `.ort` model only needs the header-only template types (`flatbuffers::String` / `Vector` / `Offset`). The runtime features of `libflatbuffers.a` — schema Parser, reflection — are never referenced. `flatbuffers::Verifier` is a header-only template, so it is instantiated inline and needs no library. |
+
+Each exclusion was validated by linking with `-Wl,--whole-archive` (which forces
+every object to resolve) and diffing the undefined symbols before and after:
+**zero new undefined symbols** in every case. The only symbols left unresolved
+are three `OrtInteropAPI::ReleaseExternal*` entry points belonging to the plugin
+EP interop layer, which are absent upstream as well and never referenced by a
+normal link.
 
 ---
 
