@@ -293,6 +293,10 @@ merge_libs "$STAGE_DIR/lib/$LIB_NAME" "${ORDERED[@]}"
 # --- metadata ----------------------------------------------------------------
 [ -f "$SOURCE_DIR/LICENSE" ] && cp -f "$SOURCE_DIR/LICENSE" "$STAGE_DIR/LICENSE"
 
+# Keep the flag list below in sync with DEFAULT_FLAGS / DEFAULT_KV in
+# build.sh. It is written literally because packaging runs independently of
+# the build step and has no access to the flags that were actually used --
+# a stale list here ships inside every archive, so treat it as user-facing.
 cat > "$STAGE_DIR/BUILD_INFO.txt" <<EOF
 project       : onnxruntime custom static build
 version       : ${VERSION}
@@ -304,10 +308,15 @@ source commit : $(git -C "$SOURCE_DIR" rev-parse HEAD 2>/dev/null || echo unknow
 configuration :
   Release / static library (onnxruntime_BUILD_SHARED_LIB=OFF)
   --minimal_build
-  --disable_contrib_ops
   --disable_ml_ops
   --disable_rtti
   --disable_exceptions
+  --include_ops_by_config <required_ops.config>
+
+  Contrib operators are ENABLED (--disable_contrib_ops is intentionally NOT
+  set). After ORT graph optimization the deepdoc models use the
+  com.microsoft fusion kernels FusedConv / FusedMatMul / QuickGelu, so
+  disabling contrib ops makes those models unloadable.
 
 contents      :
   include/  public C/C++ headers (flattened, same layout as upstream packages)

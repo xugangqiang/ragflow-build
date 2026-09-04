@@ -50,7 +50,6 @@ cd onnxruntime
     --config Release \
     --cmake_extra_defines onnxruntime_BUILD_SHARED_LIB=OFF \
     --minimal_build \
-    --disable_contrib_ops \
     --disable_ml_ops \
     --disable_rtti \
     --disable_exceptions \
@@ -58,7 +57,16 @@ cd onnxruntime
 ```
 
 All of the flags above are already the defaults, so a plain `./build.sh` is
-identical. Anything you pass is forwarded to upstream
+identical. `--include_ops_by_config onnxruntime/required_ops.config` is applied
+by default as well.
+
+`--disable_contrib_ops` is deliberately **not** used. After ORT graph
+optimization the deepdoc models depend on the `com.microsoft` fusion kernels
+`FusedConv` / `FusedMatMul` / `QuickGelu`, and that flag strips them, leaving
+the models unloadable (`Could not find an implementation for FusedMatMul(1)`
+and friends).
+
+Anything you pass is forwarded to upstream
 `tools/ci_build/build.py`; project managed options take precedence:
 
 | Option | Description |
