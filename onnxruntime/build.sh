@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # -----------------------------------------------------------------------------
-# Build a customized onnxruntime (minimal, static, no contrib/ml ops, no RTTI,
-# no exceptions) for the current host or for an explicit target platform.
+# Build a customized onnxruntime (minimal, static, reduced-opset, no ml ops,
+# no RTTI, no exceptions) for the current host or for an explicit target platform.
 #
 # The upstream onnxruntime sources live in the git submodule
 # `onnxruntime/onnxruntime` (pinned to the version in `onnxruntime/ORT_VERSION`).
@@ -10,7 +10,7 @@
 #   ./build.sh
 #   ./build.sh --config Release \
 #              --cmake_extra_defines onnxruntime_BUILD_SHARED_LIB=OFF \
-#              --minimal_build --disable_contrib_ops --disable_ml_ops \
+#              --minimal_build --disable_ml_ops \
 #              --disable_rtti --disable_exceptions --parallel
 #   ./build.sh --target osx-universal
 #   ./build.sh --target windows-arm64 --build-dir /tmp/ort-build
@@ -54,10 +54,23 @@ JOBS=""
 # --- defaults requested by this project ------------------------------------
 # store_true style flags that are ON unless the user passes them explicitly
 # (--parallel is handled separately so it can take a job count)
-DEFAULT_FLAGS=(--minimal_build --disable_contrib_ops --disable_ml_ops \
+# MINIMAL BUILD: strips the ONNX *file format* loader, so this library can ONLY
+# load ORT's own flatbuffer (.ort) models — NOT .onnx. That is exactly what we
+# want here: the deepdoc models are pre-converted to .ort (see
+# convert_onnx_models_to_ort.py), so the minimal lib is usable.
+#   --disable_ml_ops / --disable_rtti / --disable_exceptions: --disable_exceptions
+#     is valid ONLY together with --minimal_build at ORT >=1.29.
+#   --disable_contrib_ops is NOT set: the deepdoc models, after ORT graph
+#     optimization, use com.microsoft contrib *fusion* ops (FusedConv /
+#     FusedMatMul / QuickGelu). --disable_contrib_ops prunes the whole
+#     com.microsoft domain and would drop those implementations, so it must stay
+#     off. The reduced-opset config below keeps the lib slim while still keeping
+#     exactly the ops the models reference.
+DEFAULT_FLAGS=(--minimal_build --disable_ml_ops \
                --disable_rtti --disable_exceptions)
 # --key value style defaults
-DEFAULT_KV=(--config Release)
+DEFAULT_KV=(--config Release
+            --include_ops_by_config "$PKG_DIR/required_ops.config")
 # -D style defaults (user values are appended, so they win)
 DEFAULT_CMAKE_DEFINES=(
     onnxruntime_BUILD_SHARED_LIB=OFF
@@ -203,7 +216,7 @@ while [ $# -gt 0 ]; do
         --config|--build_dir|--cmake_generator|--osx_arch|--path_to_protoc_exe|--target|-t)
             # handled or rejected below; stay out of the default merging
             die "'$1' is managed by this script, use the documented project options instead" ;;
-        --minimal_build|--disable_contrib_ops|--disable_ml_ops|--disable_rtti|--disable_exceptions|--parallel|--update|--clean|--skip_tests)
+        --minimal_build|--disable_contrib_ops|--disable_ml_ops|--disable_rtti|--disable_exceptions|--parallel|--update|--clean|--skip_tests|--include_ops_by_config)
             USER_ARGS+=("$1"); mark_seen "$1"; shift ;;
         *)
             USER_ARGS+=("$1"); shift ;;
