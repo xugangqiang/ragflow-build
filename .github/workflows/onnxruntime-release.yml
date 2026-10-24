@@ -1,4 +1,4 @@
-name: onnxruntime release
+﻿name: onnxruntime release
 
 # Build scripts live in onnxruntime/ (one directory per vendored dependency).
 # GitHub only loads workflows from .github/workflows, hence this file lives
@@ -131,6 +131,10 @@ jobs:
       - name: Setup Ninja (unix)
         if: runner.os != 'Windows'
         uses: seanmiddleditch/gha-setup-ninja@master
+
+      - name: Setup Ninja (windows)
+        if: runner.os == 'Windows'
+        uses: ashutoshvarma/setup-ninja@v1
 
       - name: Setup MSVC (windows)
         if: runner.os == 'Windows'

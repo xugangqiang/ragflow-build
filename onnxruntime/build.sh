@@ -294,10 +294,11 @@ for def in "${DEFAULT_CMAKE_DEFINES[@]}" ${USER_CMAKE_DEFINES[@]+"${USER_CMAKE_D
     ORT_ARGS+=(--cmake_extra_defines "$def")
 done
 
-# Prefer ninja on unix like hosts. On Windows the MSVC toolchain is only on the
-# PATH inside a developer prompt, so keep the default Visual Studio generator
-# there unless the caller explicitly asked for something else.
-if [ "$(host_os)" != "windows" ] && ! printf '%s\n' "${USER_ARGS[@]}" | grep -qx -- "--cmake_generator"; then
+# Prefer ninja when available. On Windows we run under ilammy/msvc-dev-cmd, which
+# puts the MSVC toolchain (cl.exe / lib.exe) on PATH, so Ninja + MSVC works and
+# avoids the "Visual Studio 17 2022" generator that fails when only a newer
+# Visual Studio (18 / 2025+) is installed on the runner.
+if ! printf '%s\n' "${USER_ARGS[@]}" | grep -qx -- "--cmake_generator"; then
     if command -v ninja >/dev/null 2>&1 || command -v ninja-build >/dev/null 2>&1; then
         ORT_ARGS+=(--cmake_generator Ninja)
     fi
