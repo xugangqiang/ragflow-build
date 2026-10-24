@@ -461,10 +461,30 @@ ort_build() {
     info "building onnxruntime $ORT_VERSION for $TARGET in $build_dir"
     mkdir -p "$build_dir"
     if [ "$(host_os)" = "windows" ]; then
+        # Disable MSYS arg conversion so flag-style args (e.g. /NOLOGO) reach the
+        # MSVC linker verbatim, but convert the *path* args to native Windows form
+        # so the Python-driven build can locate build.py and the operator config.
         export MSYS_NO_PATHCONV=1
         export MSYS2_ARG_CONV_EXCL='*'
+        ORT_SRC_W="$(cygpath -w "$ORT_SRC")"
+        ORT_BUILD_PY_W="$(cygpath -w "$ORT_BUILD_PY")"
+        build_dir_W="$(cygpath -w "$build_dir")"
+        REQUIRED_OPS_CONFIG_W="$(cygpath -w "$REQUIRED_OPS_CONFIG")"
+    else
+        ORT_SRC_W="$ORT_SRC"
+        ORT_BUILD_PY_W="$ORT_BUILD_PY"
+        build_dir_W="$build_dir"
+        REQUIRED_OPS_CONFIG_W="$REQUIRED_OPS_CONFIG"
     fi
-    ( cd "$ORT_SRC" && "$PYTHON" "$ORT_BUILD_PY" --build_dir "$build_dir" "$@" )
+    # Rewrite the only path arg forwarded through $@ (--include_ops_by_config).
+    local -a ort_args=()
+    local prev=""
+    for a in "$@"; do
+        [ "$prev" = "--include_ops_by_config" ] && a="$REQUIRED_OPS_CONFIG_W"
+        ort_args+=("$a")
+        prev="$a"
+    done
+    ( cd "$ORT_SRC" && "$PYTHON" "$ORT_BUILD_PY_W" --build_dir "$build_dir_W" "${ort_args[@]}" )
     build_interface_only_deps "$build_dir"
 }
 
