@@ -353,16 +353,18 @@ for def in "${DEFAULT_CMAKE_DEFINES[@]}" ${USER_CMAKE_DEFINES[@]+"${USER_CMAKE_D
     ORT_ARGS+=(--cmake_extra_defines "$def")
 done
 
-# Prefer ninja when available. On Windows the workflow runs under
-# ilammy/msvc-dev-cmd, which puts the MSVC toolchain (cl.exe / lib.exe) on PATH,
-# so Ninja + MSVC works and avoids the hardcoded "Visual Studio 17 2022" generator
-# that fails when only a newer Visual Studio (18 / 2025+) is installed on the runner.
+# Pick a CMake generator. On Windows we must use the Visual Studio generator:
+# Ninja + MSVC mangles the linker command line (abseil .lib paths start with
+# slash and are read as flags, and Windows paths with spaces get split). The
+# runner ships Visual Studio 18 (2025) but ORT default hardcodes
+# Visual Studio 17 2022 which is absent, so use the VS generator instead.
 if ! printf '%s\n' "${USER_ARGS[@]}" | grep -qx -- "--cmake_generator"; then
-    if command -v ninja >/dev/null 2>&1 || command -v ninja-build >/dev/null 2>&1; then
+    if [ "$(host_os)" = "windows" ]; then
+        ORT_ARGS+=(--cmake_generator "Visual Studio 18 2025")
+    elif command -v ninja >/dev/null 2>&1 || command -v ninja-build >/dev/null 2>&1; then
         ORT_ARGS+=(--cmake_generator Ninja)
     fi
 fi
-
 # newer compilers trip -Werror in the upstream tree
 if ! has_seen "--compile_no_warning_as_error"; then
     ORT_ARGS+=(--compile_no_warning_as_error)
