@@ -114,8 +114,6 @@ jobs:
 
       - name: Install Python build deps
         shell: bash
-        env:
-          MSYS_NO_PATHCONV: '1'
           MSYS2_ARG_CONV_EXCL: '*'
         run: |
           set -euo pipefail
@@ -156,6 +154,9 @@ jobs:
 
       - name: Build ${{ matrix.target }}
         shell: bash
+        env:
+          MSYS_NO_PATHCONV: '1'
+          MSYS2_ARG_CONV_EXCL: '*'
         run: |
           # Equivalent to:
           #   --config Release
