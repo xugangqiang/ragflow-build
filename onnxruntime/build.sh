@@ -360,7 +360,7 @@ done
 # Visual Studio 17 2022 which is absent, so use the VS generator instead.
 if ! printf '%s\n' "${USER_ARGS[@]}" | grep -qx -- "--cmake_generator"; then
     if [ "$(host_os)" = "windows" ]; then
-        ORT_ARGS+=(--cmake_generator "Visual Studio 18 2025")
+        ORT_ARGS+=(--cmake_generator "Visual Studio 18 2026")
     elif command -v ninja >/dev/null 2>&1 || command -v ninja-build >/dev/null 2>&1; then
         ORT_ARGS+=(--cmake_generator Ninja)
     fi
