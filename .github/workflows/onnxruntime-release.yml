@@ -287,3 +287,5 @@ jobs:
             dist/*.zip
             dist/*.sha256
             dist/checksums.txt
+
+# ci: touch to force workflow re-index
