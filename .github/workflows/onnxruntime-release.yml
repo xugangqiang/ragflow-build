@@ -94,15 +94,10 @@ jobs:
             os: macos-latest
           - target: osx-universal
             os: macos-latest
-          # Windows is disabled for now: the runner image has no Visual Studio
-          # instance, so CMake configure dies with
-          #   Generator "Visual Studio 17 2022" could not find any instance of
-          #   Visual Studio.
-          # onnxruntime/build.sh already supports both windows-x64 and
-          # windows-arm64; uncomment these once a runner with the MSVC
-          # toolchain (and vcvarsall / lib.exe for packaging) is available.
-          # - target: windows-x64
-          #   os: windows-latest
+          # Windows: msvc-dev-cmd below provides the MSVC toolchain (cl.exe /
+          # lib.exe via vcvarsall), so the build + packaging steps now work.
+          - target: windows-x64
+            os: windows-latest
           # - target: windows-arm64
           #   os: windows-latest
 
