@@ -1,4 +1,4 @@
-﻿name: onnxruntime release
+name: onnxruntime release
 
 # Build scripts live in onnxruntime/ (one directory per vendored dependency).
 # GitHub only loads workflows from .github/workflows, hence this file lives
