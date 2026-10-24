@@ -114,6 +114,9 @@ jobs:
 
       - name: Install Python build deps
         shell: bash
+        env:
+          MSYS_NO_PATHCONV: '1'
+          MSYS2_ARG_CONV_EXCL: '*'
         run: |
           set -euo pipefail
           # ORT 1.29.0 binds parse_config into `util` only when `flatbuffers` is
