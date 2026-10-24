@@ -150,8 +150,20 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          git config --global core.longpaths true
+          git config --global --unset credential.helper || true
           echo "${{ needs.prepare.outputs.version }}" > "${{ env.ORT_PKG }}/ORT_VERSION"
           bash "${{ env.ORT_PKG }}/scripts/init-submodules.sh"
+          echo "=== verify ORT submodule checkout ==="
+          if [ -f "${{ env.ORT_PKG }}/onnxruntime/tools/ci_build/build.py" ]; then
+            echo "build.py present OK"
+          else
+            echo "BUILD.PY MISSING -- diagnostic:"
+            ls -la "${{ env.ORT_PKG }}/onnxruntime" || true
+            git -C "${{ env.ORT_PKG }}/onnxruntime" status || true
+            git -C "${{ env.ORT_PKG }}/onnxruntime" log --oneline -1 || true
+            exit 1
+          fi
 
       - name: Build ${{ matrix.target }}
         shell: bash
