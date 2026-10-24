@@ -134,7 +134,9 @@ jobs:
 
       - name: Setup Ninja (windows)
         if: runner.os == 'Windows'
-        uses: ashutoshvarma/setup-ninja@v1
+        uses: seanmiddleditch/gha-setup-ninja@master
+        with:
+          platform: win
 
       - name: Setup MSVC (windows)
         if: runner.os == 'Windows'

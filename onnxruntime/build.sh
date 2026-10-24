@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # -----------------------------------------------------------------------------
-# Build a customized onnxruntime (minimal, static, reduced-opset, no ml ops,
-# no RTTI, no exceptions) for the current host or for an explicit target platform.
+# Build a customized onnxruntime (minimal, static, reduced operator set, no
+# ml ops, no RTTI, no exceptions) for the current host or for an explicit
+# target platform.
 #
 # The upstream onnxruntime sources live in the git submodule
 # `onnxruntime/onnxruntime` (pinned to the version in `onnxruntime/ORT_VERSION`).
@@ -37,6 +38,9 @@ SCRIPT_DIR="$PKG_DIR/scripts"
 ORT_SRC="$PKG_DIR/onnxruntime"
 ORT_VERSION_FILE="$PKG_DIR/ORT_VERSION"
 ORT_VERSION="$(tr -d '[:space:]' < "$ORT_VERSION_FILE")"
+# Operator allow list this build is reduced to. Regenerate it whenever the
+# models change: scripts/gen_required_ops.sh
+REQUIRED_OPS_CONFIG="$PKG_DIR/required_operators.config"
 ORT_BUILD_PY="$ORT_SRC/tools/ci_build/build.py"
 
 SUPPORTED_TARGETS="linux-x86_64 linux-aarch64 osx-arm64 osx-x86_64 osx-universal windows-x64 windows-arm64"
@@ -50,27 +54,38 @@ DO_CLEAN=0
 DO_PACKAGE=1
 EXPLICIT_BUILD_ROOT=0
 JOBS=""
+# Full operator-set build (the "-full" variant). Off by default: the published
+# default is a minimal build (--minimal_build + --include_ops_by_config reduced to
+# required_operators.config) that cannot load .onnx models containing contrib ops
+# such as HardSwish. --full drops --minimal_build / --include_ops_by_config /
+# --disable_ml_ops so the library carries the complete operator set and can load
+# the EE DeepDoc weights (e.g. rec.ee.cpu.onnx). The SessionGetInitializer patch
+# is applied independently by scripts/init-submodules.sh.
+FULL_BUILD=0
 
 # --- defaults requested by this project ------------------------------------
 # store_true style flags that are ON unless the user passes them explicitly
 # (--parallel is handled separately so it can take a job count)
-# MINIMAL BUILD: strips the ONNX *file format* loader, so this library can ONLY
-# load ORT's own flatbuffer (.ort) models — NOT .onnx. That is exactly what we
-# want here: the deepdoc models are pre-converted to .ort (see
-# convert_onnx_models_to_ort.py), so the minimal lib is usable.
-#   --disable_ml_ops / --disable_rtti / --disable_exceptions: --disable_exceptions
-#     is valid ONLY together with --minimal_build at ORT >=1.29.
-#   --disable_contrib_ops is NOT set: the deepdoc models, after ORT graph
-#     optimization, use com.microsoft contrib *fusion* ops (FusedConv /
-#     FusedMatMul / QuickGelu). --disable_contrib_ops prunes the whole
-#     com.microsoft domain and would drop those implementations, so it must stay
-#     off. The reduced-opset config below keeps the lib slim while still keeping
-#     exactly the ops the models reference.
-DEFAULT_FLAGS=(--minimal_build --disable_ml_ops \
-               --disable_rtti --disable_exceptions)
-# --key value style defaults
-DEFAULT_KV=(--config Release
-            --include_ops_by_config "$PKG_DIR/required_ops.config")
+#
+# NOTE: --disable_contrib_ops is deliberately NOT in this list. RAGFlow's
+# DeepDoc weights are converted from PaddlePaddle models and depend on the
+# com.microsoft fused kernels (FusedConv, FusedMatMul, QuickGelu); dropping
+# contrib ops makes every DeepDoc model fail with
+# "Could not find an implementation for FusedConv(1)". Operator coverage is
+# narrowed by the allow list in required_operators.config instead, which keeps
+# those kernels while still excluding everything the models do not use.
+#
+# The minimal (default) build reduces to the allow list and disables ML ops.
+# The --full build keeps the complete operator set (no --minimal_build, no
+# --include_ops_by_config, ML ops enabled) so .onnx models with contrib ops
+# such as HardSwish load. --disable_rtti / --disable_exceptions are kept in both
+# variants: they do not affect operator coverage and match the binary conventions
+# the consumer's cgo binding links against.
+# NOTE: DEFAULT_FLAGS / DEFAULT_KV are NOT selected here. They depend on
+# FULL_BUILD, which is only known after --full is parsed (see the block right
+# after the --full/--minimal_build mutual-exclusion check below). Selecting them
+# up here would always evaluate the minimal branch (FULL_BUILD is still 0), which
+# made --full a silent no-op in earlier revisions.
 # -D style defaults (user values are appended, so they win)
 DEFAULT_CMAKE_DEFINES=(
     onnxruntime_BUILD_SHARED_LIB=OFF
@@ -113,6 +128,11 @@ Project options:
   --update              Run 'git submodule update --init --recursive' first.
   --clean               Delete the build directory for this target first.
   --no-package          Build only, do not create a tarball/zip in --dist-dir.
+  --full                Full operator-set build (the "-full" variant): no
+                          --minimal_build / --include_ops_by_config / --disable_ml_ops.
+                          Produces a static library that can load .onnx models with
+                          contrib ops such as HardSwish (required by the EE DeepDoc
+                          weights). Incompatible with --minimal_build.
   -h, --help            Show this help.
 
 Default onnxruntime options (skipped when you pass them yourself):
@@ -207,21 +227,54 @@ while [ $# -gt 0 ]; do
         --clean)    DO_CLEAN=1; shift ;;
         --package)  DO_PACKAGE=1; shift ;;
         --no-package) DO_PACKAGE=0; shift ;;
+        --full)     FULL_BUILD=1; shift ;;
         -h|--help)  usage; exit 0 ;;
         --cmake_extra_defines)
             [ $# -ge 2 ] || die "--cmake_extra_defines requires a value"
             USER_CMAKE_DEFINES+=("$2")
             mark_seen "--cmake_extra_defines"
             shift 2 ;;
+        --include_ops_by_config)
+            # Key/value pair: forward both tokens and remember it so the
+            # default allow list below is not applied as well.
+            [ $# -ge 2 ] || die "--include_ops_by_config requires a value"
+            USER_ARGS+=("$1" "$2")
+            mark_seen "--include_ops_by_config"
+            shift 2 ;;
         --config|--build_dir|--cmake_generator|--osx_arch|--path_to_protoc_exe|--target|-t)
             # handled or rejected below; stay out of the default merging
             die "'$1' is managed by this script, use the documented project options instead" ;;
-        --minimal_build|--disable_contrib_ops|--disable_ml_ops|--disable_rtti|--disable_exceptions|--parallel|--update|--clean|--skip_tests|--include_ops_by_config)
+        --minimal_build|--disable_contrib_ops|--disable_ml_ops|--disable_rtti|--disable_exceptions|--parallel|--update|--clean|--skip_tests)
             USER_ARGS+=("$1"); mark_seen "$1"; shift ;;
         *)
             USER_ARGS+=("$1"); shift ;;
     esac
 done
+
+# --full and --minimal_build are mutually exclusive: --minimal_build would
+# re-introduce the operator reduction we are explicitly opting out of.
+if [ "$FULL_BUILD" -eq 1 ] && has_seen "--minimal_build"; then
+    die "--full is incompatible with --minimal_build; pick one"
+fi
+
+# Select the default flag / key-value sets now that FULL_BUILD is known. This
+# MUST come after argument parsing: the --full branch is only meaningful once
+# --full has been consumed above.
+if [ "$FULL_BUILD" -eq 1 ]; then
+    # Standard full build: complete operator set, and RTTI / exceptions left at
+    # ONNX Runtime's defaults. Do NOT pass --disable_exceptions here: build.py
+    # hard-rejects "--disable_exceptions" unless --minimal_build is also given,
+    # and the whole point of --full is to drop --minimal_build. We also omit
+    # --disable_rtti so the full archive matches the stock ONNX Runtime ABI
+    # (RTTI + exceptions on) that the consumer's CGO link expects.
+    DEFAULT_FLAGS=()
+    DEFAULT_KV=(--config Release)
+else
+    DEFAULT_FLAGS=(--minimal_build --disable_ml_ops \
+                   --disable_rtti --disable_exceptions)
+    # --key value style defaults
+    DEFAULT_KV=(--config Release --include_ops_by_config "$REQUIRED_OPS_CONFIG")
+fi
 
 if [ -z "$TARGET" ]; then
     TARGET="$(detect_target)"
@@ -238,6 +291,12 @@ esac
 # sanity checks
 # ---------------------------------------------------------------------------
 [ -f "$ORT_BUILD_PY" ] || die "onnxruntime submodule missing at $ORT_SRC, run 'git submodule update --init --recursive'"
+
+# The shipped allow list is only applied when the caller did not pass one, so
+# only require the file in that case.
+if ! has_seen "--include_ops_by_config" && [ ! -f "$REQUIRED_OPS_CONFIG" ]; then
+    die "missing operator allow list $REQUIRED_OPS_CONFIG; regenerate it with scripts/gen_required_ops.sh"
+fi
 
 PYTHON="$(command -v python3 || command -v python || true)"
 [ -n "$PYTHON" ] || die "python3 is required to drive onnxruntime's build"
@@ -294,10 +353,10 @@ for def in "${DEFAULT_CMAKE_DEFINES[@]}" ${USER_CMAKE_DEFINES[@]+"${USER_CMAKE_D
     ORT_ARGS+=(--cmake_extra_defines "$def")
 done
 
-# Prefer ninja when available. On Windows we run under ilammy/msvc-dev-cmd, which
-# puts the MSVC toolchain (cl.exe / lib.exe) on PATH, so Ninja + MSVC works and
-# avoids the "Visual Studio 17 2022" generator that fails when only a newer
-# Visual Studio (18 / 2025+) is installed on the runner.
+# Prefer ninja when available. On Windows the workflow runs under
+# ilammy/msvc-dev-cmd, which puts the MSVC toolchain (cl.exe / lib.exe) on PATH,
+# so Ninja + MSVC works and avoids the hardcoded "Visual Studio 17 2022" generator
+# that fails when only a newer Visual Studio (18 / 2025+) is installed on the runner.
 if ! printf '%s\n' "${USER_ARGS[@]}" | grep -qx -- "--cmake_generator"; then
     if command -v ninja >/dev/null 2>&1 || command -v ninja-build >/dev/null 2>&1; then
         ORT_ARGS+=(--cmake_generator Ninja)
@@ -327,7 +386,16 @@ ORT_ARGS+=(${USER_ARGS[@]+"${USER_ARGS[@]}"})
 # per target build
 # ---------------------------------------------------------------------------
 if [ "$EXPLICIT_BUILD_ROOT" -eq 0 ]; then
-    BUILD_DIR="$BUILD_ROOT/$TARGET"
+    # The minimal and full variants must NOT share a build directory: they feed
+    # ONNX Runtime's build.py different flags, and a leftover CMake cache from
+    # the other variant makes the later build silently reuse the wrong operator
+    # set (e.g. a "full" build that actually produces a minimal .a). Keep them
+    # in separate dirs.
+    if [ "$FULL_BUILD" -eq 1 ]; then
+        BUILD_DIR="$BUILD_ROOT/${TARGET}-full"
+    else
+        BUILD_DIR="$BUILD_ROOT/$TARGET"
+    fi
 else
     BUILD_DIR="$BUILD_ROOT"
 fi
@@ -357,9 +425,26 @@ ort_config() {
 
 build_interface_only_deps() {
     local build_dir="$1" bin_dir dep found
-    bin_dir="$(find "$build_dir" -name CMakeCache.txt -print -quit 2>/dev/null)"
+    # The directory passed in is exactly what was handed to `build.py
+    # --build_dir`, i.e. the top-level onnxruntime CMake build directory where
+    # the main CMakeCache.txt lives and every top-level target (including the
+    # FetchContent `re2` target) is defined. A naive
+    # `find "$build_dir" -name CMakeCache.txt -print -quit` is dangerous here:
+    # the FetchContent subbuild dirs under _deps/*-subbuild/ also carry a
+    # CMakeCache.txt, and because they sort before the top-level one ("_" < "C")
+    # find reports a subbuild directory first. Running `cmake --build <subbuild>
+    # --target re2` there fails with "unknown target 're2'", which the trailing
+    # `|| echo warning` happily swallows, so libre2.a is never built and the
+    # final link dies with "undefined reference to re2::RE2::*". Prefer the
+    # top-level cache (a direct child of build_dir); only fall back to a search
+    # that excludes the _deps subbuild caches.
+    if [ -f "$build_dir/CMakeCache.txt" ]; then
+        bin_dir="$build_dir"
+    else
+        bin_dir="$(find "$build_dir" -name CMakeCache.txt -not -path '*/_deps/*' -print -quit 2>/dev/null)"
+        bin_dir="$(dirname "$bin_dir")"
+    fi
     [ -n "$bin_dir" ] || return 0
-    bin_dir="$(dirname "$bin_dir")"
     for dep in "${MISSING_INTERFACE_DEPS[@]}"; do
         found="$(find "$build_dir" \( -name "lib${dep}.a" -o -name "${dep}.lib" \) -print -quit 2>/dev/null)"
         [ -n "$found" ] && continue
@@ -420,11 +505,16 @@ info "build finished: $BUILD_DIR"
 # ---------------------------------------------------------------------------
 # packaging
 # ---------------------------------------------------------------------------
+PKG_VARIANT_ARGS=()
+if [ "$FULL_BUILD" -eq 1 ]; then
+    PKG_VARIANT_ARGS=(--variant full)
+fi
 if [ "$DO_PACKAGE" -eq 1 ]; then
     bash "$SCRIPT_DIR/package.sh" \
         --source "$ORT_SRC" \
         --build-dir "$BUILD_DIR" \
         --dist-dir "$DIST_DIR" \
         --target "$TARGET" \
-        --version "$ORT_VERSION"
+        --version "$ORT_VERSION" \
+        ${PKG_VARIANT_ARGS[@]+"${PKG_VARIANT_ARGS[@]}"}
 fi
