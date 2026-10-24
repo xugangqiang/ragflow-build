@@ -460,6 +460,10 @@ ort_build() {
     local build_dir="$1"; shift
     info "building onnxruntime $ORT_VERSION for $TARGET in $build_dir"
     mkdir -p "$build_dir"
+    if [ "$(host_os)" = "windows" ]; then
+        export MSYS_NO_PATHCONV=1
+        export MSYS2_ARG_CONV_EXCL='*'
+    fi
     ( cd "$ORT_SRC" && "$PYTHON" "$ORT_BUILD_PY" --build_dir "$build_dir" "$@" )
     build_interface_only_deps "$build_dir"
 }
