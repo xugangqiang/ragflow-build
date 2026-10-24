@@ -114,7 +114,6 @@ jobs:
 
       - name: Install Python build deps
         shell: bash
-          MSYS2_ARG_CONV_EXCL: '*'
         run: |
           set -euo pipefail
           # ORT 1.29.0 binds parse_config into `util` only when `flatbuffers` is
@@ -156,8 +155,6 @@ jobs:
         shell: bash
         env:
           MSYS_NO_PATHCONV: '1'
-          MSYS2_ARG_CONV_EXCL: '*'
-        run: |
           # Equivalent to:
           #   --config Release
           #   --cmake_extra_defines onnxruntime_BUILD_SHARED_LIB=OFF
