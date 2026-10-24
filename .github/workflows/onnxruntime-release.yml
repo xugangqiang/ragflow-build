@@ -1,4 +1,4 @@
-name: onnxruntime release
+﻿name: onnxruntime release
 
 # Build scripts live in onnxruntime/ (one directory per vendored dependency).
 # GitHub only loads workflows from .github/workflows, hence this file lives
@@ -157,6 +157,7 @@ jobs:
         shell: bash
         env:
           MSYS_NO_PATHCONV: '1'
+        run: |
           # Equivalent to:
           #   --config Release
           #   --cmake_extra_defines onnxruntime_BUILD_SHARED_LIB=OFF
