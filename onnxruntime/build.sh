@@ -500,7 +500,7 @@ ort_build() {
         # Emit a native .cmd so the build (and the re2 INTERFACE-dep fixup, run
         # later in bash) execute entirely outside MSYS. The script exit code is
         # build.py's, so failures propagate back to this function.
-        bat_msys="$build_dir/build_ort.cmd"
+        cmd //c "$bat_msys"
         bat_win="$(cygpath -w "$bat_msys")"
         {
             printf '@echo off\n'
