@@ -257,18 +257,35 @@ merge_libs() {
             libtool -static -o "$out" "$@"
             ;;
         MINGW*|MSYS*|CYGWIN*)
-            local lib_exe
+            local lib_exe rsp cmdfile lib_exe_w out_w rsp_w
             if ! lib_exe="$(find_msvc_lib)"; then
-                echo "error: MSVC 'lib.exe' not found." >&2
+                echo "error: MSVC archiver not found." >&2
                 echo "       Run this from a Visual Studio developer prompt or" >&2
                 echo "       set up the MSVC environment before packaging." >&2
                 return 1
             fi
             echo "    using $(printf '%s' "$lib_exe")"
+            # Run the merge in a NATIVE Windows command context. Under Git Bash
+            # (MSYS2) argv path conversion rewrites /NOLOGO into
+            # 'C:\Program Files\Git\NOLOGO' (fatal LNK1181) and leaves the
+            # POSIX /d/a/... lib paths unconverted, so the archiver cannot open
+            # them. Write every path as a native Windows path and drive the
+            # archiver from a native script so /NOLOGO stays verbatim.
+            out_w="$(cygpath -w "$out")"
             rsp="$(mktemp)"
-            printf '"%s"\n' "$@" > "$rsp"
-            "$lib_exe" /NOLOGO "/OUT:$out" "@$rsp"
-            rm -f "$rsp"
+            : > "$rsp"
+            for l in "$@"; do printf '"%s"\n' "$(cygpath -w "$l")" >> "$rsp"; done
+            rsp_w="$(cygpath -w "$rsp")"
+            lib_exe_w="$(cygpath -w "$lib_exe")"
+            cmdfile="$(mktemp -t ort_merge.XXXX.cmd)"
+            {
+                printf '@echo off\n'
+                printf '"%s" /NOLOGO /OUT:"%s" @%s\n' "$lib_exe_w" "$out_w" "$rsp_w"
+            } > "$cmdfile"
+            cmd //c "$(cygpath -w "$cmdfile")"
+            local rc=$?
+            rm -f "$rsp" "$cmdfile"
+            return $rc
             ;;
         *)
             mri="$(mktemp)"
