@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env bash
+#!/usr/bin/env bash
 # -----------------------------------------------------------------------------
 # Build a customized onnxruntime (minimal, static, reduced operator set, no
 # ml ops, no RTTI, no exceptions) for the current host or for an explicit
@@ -488,7 +488,7 @@ ort_build() {
             -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 \
             -property installationPath 2>/dev/null)"
         [ -n "$vs_root" ] || die "could not locate a Visual Studio install via vswhere"
-        vcvars_W="$(cygpath -w "$vs_root")\\VC\\Auxiliary\\Build\\vcvars64.bat"
+        vcvars_W="$vs_root\\VC\\Auxiliary\\Build\\vcvars64.bat"
         # Rewrite the only path arg forwarded through $@ (--include_ops_by_config).
         local -a ort_args=()
         local prev=""
@@ -512,7 +512,7 @@ ort_build() {
             done
             printf '\n'
         } > "$bat_msys"
-        cmd //c "call \"$bat_win\""
+        MSYS2_ARG_CONV_EXCL=* cmd //c ""\$bat_win\""
         local rc=$?
         build_interface_only_deps "$build_dir"
         return $rc
