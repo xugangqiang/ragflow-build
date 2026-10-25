@@ -512,7 +512,7 @@ ort_build() {
             done
             printf '\n'
         } > "$bat_msys"
-        MSYS2_ARG_CONV_EXCL=* cmd //c ""\$bat_win\""
+        MSYS2_ARG_CONV_EXCL=* cmd //c "$bat_win"
         local rc=$?
         build_interface_only_deps "$build_dir"
         return $rc
