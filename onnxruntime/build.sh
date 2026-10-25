@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+﻿#!/usr/bin/env bash
 # -----------------------------------------------------------------------------
 # Build a customized onnxruntime (minimal, static, reduced operator set, no
 # ml ops, no RTTI, no exceptions) for the current host or for an explicit
@@ -460,22 +460,68 @@ ort_build() {
     local build_dir="$1"; shift
     info "building onnxruntime $ORT_VERSION for $TARGET in $build_dir"
     mkdir -p "$build_dir"
-    if [ "$(host_os)" = "windows" ]; then
-        # Disable MSYS arg conversion so flag-style args (e.g. /NOLOGO) reach the
-        # MSVC linker verbatim, but convert the *path* args to native Windows form
-        # so the Python-driven build can locate build.py and the operator config.
-        export MSYS_NO_PATHCONV=1
-        export MSYS2_ARG_CONV_EXCL='*'
+        if [ "$(host_os)" = "windows" ]; then
+        # Run the entire ONNX Runtime build in a NATIVE Windows command shell
+        # (the MSVC developer environment). When driven from Git Bash the build
+        # runs under MSYS2, whose argv path conversion cannot satisfy both
+        # requirements at once:
+        #   (a) MSVC linker flags such as /NOLOGO must reach link.exe verbatim,
+        #   (b) the /tmp and /d/a/... paths build.py generates internally must be
+        #       turned into native Windows paths so link.exe can open them.
+        # Disabling conversion (MSYS2_ARG_CONV_EXCL='*') satisfies (a) but breaks
+        # (b) -> LNK1104 "cannot open file '/tmp/...'". Letting conversion run
+        # satisfies (b) but mangles (a) -> LNK4044. A native Windows command-prompt
+        # context has no such conversion: every /-flag stays verbatim and every
+        # path is native. This mirrors how ONNX Runtime's own Windows CI invokes
+        # build.py. The workflow step exports MSYS_NO_PATHCONV=1 for the bash layer;
+        # clear it so the native-shell dispatch below is translated correctly.
+        unset MSYS_NO_PATHCONV MSYS2_ARG_CONV_EXCL 2>/dev/null || true
         ORT_SRC_W="$(cygpath -w "$ORT_SRC")"
         ORT_BUILD_PY_W="$(cygpath -w "$ORT_BUILD_PY")"
         build_dir_W="$(cygpath -w "$build_dir")"
         REQUIRED_OPS_CONFIG_W="$(cygpath -w "$REQUIRED_OPS_CONFIG")"
-    else
-        ORT_SRC_W="$ORT_SRC"
-        ORT_BUILD_PY_W="$ORT_BUILD_PY"
-        build_dir_W="$build_dir"
-        REQUIRED_OPS_CONFIG_W="$REQUIRED_OPS_CONFIG"
+        PYTHON_W="$(cygpath -w "$PYTHON")"
+        # Resolve the MSVC toolchain via vswhere (native installer path).
+        local vs_root vcvars_W bat_msys bat_win
+        vs_root="$("C:/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe" \
+            -latest -products '*' \
+            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 \
+            -property installationPath 2>/dev/null)"
+        [ -n "$vs_root" ] || die "could not locate a Visual Studio install via vswhere"
+        vcvars_W="$(cygpath -w "$vs_root")\\VC\\Auxiliary\\Build\\vcvars64.bat"
+        # Rewrite the only path arg forwarded through $@ (--include_ops_by_config).
+        local -a ort_args=()
+        local prev=""
+        for a in "$@"; do
+            [ "$prev" = "--include_ops_by_config" ] && a="$REQUIRED_OPS_CONFIG_W"
+            ort_args+=("$a")
+            prev="$a"
+        done
+        # Emit a native .cmd so the build (and the re2 INTERFACE-dep fixup, run
+        # later in bash) execute entirely outside MSYS. The script exit code is
+        # build.py's, so failures propagate back to this function.
+        bat_msys="$build_dir/build_ort.cmd"
+        bat_win="$(cygpath -w "$bat_msys")"
+        {
+            printf '@echo off\n'
+            printf 'call "%s"\n' "$vcvars_W"
+            printf 'cd /d "%s"\n' "$ORT_SRC_W"
+            printf '"%s" "%s" --build_dir "%s"' "$PYTHON_W" "$ORT_BUILD_PY_W" "$build_dir_W"
+            for a in "${ort_args[@]}"; do
+                printf ' "%s"' "$a"
+            done
+            printf '\n'
+        } > "$bat_msys"
+        cmd //c "call \"$bat_win\""
+        local rc=$?
+        build_interface_only_deps "$build_dir"
+        return $rc
     fi
+
+    ORT_SRC_W="$ORT_SRC"
+    ORT_BUILD_PY_W="$ORT_BUILD_PY"
+    build_dir_W="$build_dir"
+    REQUIRED_OPS_CONFIG_W="$REQUIRED_OPS_CONFIG"
     # Rewrite the only path arg forwarded through $@ (--include_ops_by_config).
     local -a ort_args=()
     local prev=""
@@ -544,3 +590,4 @@ if [ "$DO_PACKAGE" -eq 1 ]; then
         --version "$ORT_VERSION" \
         ${PKG_VARIANT_ARGS[@]+"${PKG_VARIANT_ARGS[@]}"}
 fi
+
